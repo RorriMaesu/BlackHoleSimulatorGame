@@ -167,6 +167,8 @@
                 </select>
             </div>
 
+            <div class="mb-3"><label for="mass-slider" class="text-sm font-medium">Projectile Mass</label><div class="flex items-center gap-2 mt-1"><input type="range" id="mass-slider" min="1" max="50" step="1" value="5" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"><input type="number" id="mass-input" min="1" step="1" value="5" class="w-20 bg-gray-800 border border-gray-600 text-white rounded-md p-1 text-center"></div></div>
+
             <div class="mb-4"><label for="power-slider" class="text-sm font-medium">Launch Power</label><div class="flex items-center gap-2 mt-1"><input type="range" id="power-slider" min="10" max="1000" step="1" value="50" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"><input type="number" id="power-input" min="10" step="1" value="50" class="w-20 bg-gray-800 border border-gray-600 text-white rounded-md p-1 text-center"></div></div>
             <p id="object-count-info" class="text-xs text-gray-400 mt-3">Objects: 0</p>
             <p id="controls-info" class="text-xs text-gray-400 mt-1">Click simulation to aim.</p>
@@ -206,13 +208,16 @@
 
         const state = {isMobile: /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent), cameraMode: 'cinematic', keyState: {}, gravityConstant: 1.0, lastGravityConstant: 1.0, cannonPower: 50, canFire: true, recoilOffset: 0, objectIdCounter: 0};
         const objectTypes = {
-            'small-planet': { name: 'Small Planet', radius: 1.5, color: 0x4a90e2, mass: 5, emissiveIntensity: 0.4 },
-            'large-planet': { name: 'Large Planet', radius: 3, color: 0x7ed321, mass: 20, emissiveIntensity: 0.4 },
-            'star': { name: 'Star', radius: 7, color: 0xffd700, mass: 200, isStar: true, emissiveIntensity: 1.2 },
-            'dwarf-star': { name: 'Dwarf Star', radius: 4, color: 0xffffff, mass: 100, isStar: true, emissiveIntensity: 1.0 },
-            'black-hole': { name: 'Black Hole', radius: 5, color: 0x000000, mass: 50000, isBlackHole: true, emissiveIntensity: 0 }
+            'small-planet': { name: 'Small Planet', radius: 1.5, color: 0x4a90e2, mass: 5, minMass: 1, maxMass: 50, emissiveIntensity: 0.4 },
+            'large-planet': { name: 'Large Planet', radius: 3, color: 0x7ed321, mass: 20, minMass: 10, maxMass: 200, emissiveIntensity: 0.4 },
+            'star': { name: 'Star', radius: 7, color: 0xffd700, mass: 200, minMass: 100, maxMass: 1000, isStar: true, emissiveIntensity: 1.2 },
+            'dwarf-star': { name: 'Dwarf Star', radius: 4, color: 0xffffff, mass: 100, minMass: 50, maxMass: 500, isStar: true, emissiveIntensity: 1.0 },
+            'black-hole': { name: 'Black Hole', radius: 5, color: 0x000000, mass: 50000, minMass: 10000, maxMass: 200000, isBlackHole: true, emissiveIntensity: 0 }
         };
         let blackHoles = [], celestialObjects = [], whiteHoles = [], transitionQueue = [];
+        let cameraTarget;
+        let currentOrbitRadius = 600;
+        let targetOrbitRadius = 600;
         
         const scene = new THREE.Scene();
         const clock = new THREE.Clock();
@@ -242,8 +247,8 @@
 
         const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
         bloomPass.threshold = 0;
-        bloomPass.strength = 0.8; // Adjusted strength for a subtle but colorful glow
-        bloomPass.radius = 0.2;   // Adjusted radius for a softer spread
+        bloomPass.strength = 0.8; 
+        bloomPass.radius = 0.2;
 
         const bloomComposer = new EffectComposer(renderer);
         bloomComposer.renderToScreen = false;
@@ -289,19 +294,37 @@
             return geometry;
         }
 
-        const smbh = new THREE.Mesh(new THREE.SphereGeometry(25, 64, 64), new THREE.MeshBasicMaterial({ color: 0x000000 }));
-        const smbhAccretionDisk = new THREE.Points(createDiskGeometry(35, 120, 0xffa500, 0x8B0000), new THREE.PointsMaterial({ size: 0.8, vertexColors: true, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.9, depthWrite: false }));
-        smbh.add(smbhAccretionDisk);
+        const smbh = new THREE.Mesh(new THREE.CylinderGeometry(25, 25, 2, 64), new THREE.ShaderMaterial({
+            uniforms: {
+                time: { value: 0 },
+                radius: { value: 25 },
+                cameraPos: { value: new THREE.Vector3() }
+            },
+            vertexShader: document.getElementById('bh-vertexshader')?.textContent,
+            fragmentShader: document.getElementById('bh-fragmentshader')?.textContent,
+        }));
+        const smbhData = { id: 'smbh', name: 'Supermassive BH', mesh: smbh, mass: 500000, radius: 25, velocity: new THREE.Vector3(), rotationSpeed: 0.0005 };
+        blackHoles.push(smbhData);
+        updateBlackHoleVisuals(smbhData);
         scene.add(smbh);
-        blackHoles.push({ id: 'smbh', name: 'Supermassive BH', mesh: smbh, mass: 500000, radius: 25, velocity: new THREE.Vector3() });
 
-        const orbitingBh = new THREE.Mesh(new THREE.SphereGeometry(10, 64, 64), new THREE.MeshBasicMaterial({ color: 0x000000 }));
-        const orbitingBhAccretionDisk = new THREE.Points(createDiskGeometry(15, 60, 0x00aaff, 0xff6600), new THREE.PointsMaterial({ size: 0.5, vertexColors: true, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.8, depthWrite: false }));
-        orbitingBh.add(orbitingBhAccretionDisk);
+        const orbitingBh = new THREE.Mesh(new THREE.CylinderGeometry(10, 10, 2, 64), new THREE.ShaderMaterial({
+            uniforms: {
+                time: { value: 0 },
+                radius: { value: 10 },
+                cameraPos: { value: new THREE.Vector3() }
+            },
+            vertexShader: document.getElementById('bh-vertexshader')?.textContent,
+            fragmentShader: document.getElementById('bh-fragmentshader')?.textContent,
+        }));
         orbitingBh.position.set(400, 0, 0);
         scene.add(orbitingBh);
         const orbitalVelocity = Math.sqrt((state.gravityConstant * 500000) / 400);
-        blackHoles.push({ id: 'orbiting_bh', name: 'Orbiting BH', mesh: orbitingBh, mass: 100000, radius: 10, velocity: new THREE.Vector3(0, 0, -orbitalVelocity) });
+        const orbitingBhData = { id: 'orbiting_bh', name: 'Orbiting BH', mesh: orbitingBh, mass: 100000, radius: 10, velocity: new THREE.Vector3(0, 0, -orbitalVelocity), rotationSpeed: 0.001 };
+        blackHoles.push(orbitingBhData);
+        updateBlackHoleVisuals(orbitingBhData);
+        
+        cameraTarget = blackHoles[0];
 
         const starfield = new THREE.Points(createStarfieldGeometry(), new THREE.PointsMaterial({ color: 0xffffff, size: 0.7 }));
         scene.add(starfield);
@@ -317,12 +340,9 @@
         }
 
         const cannon = new THREE.Group();
-        const cannonBarrel = new THREE.Mesh(new THREE.CylinderGeometry(3, 2.5, 25, 12), new THREE.MeshStandardMaterial({ color: 0x666677, roughness: 0.5, metalness: 0.9 }));
-        cannonBarrel.rotation.x = Math.PI / 2;
         const barrelGroup = new THREE.Group();
-        barrelGroup.add(cannonBarrel);
         barrelGroup.position.y = 5;
-        cannon.add(new THREE.Mesh(new THREE.CylinderGeometry(8, 10, 5, 16), new THREE.MeshStandardMaterial({ color: 0x444455, roughness: 0.6, metalness: 0.8 })), barrelGroup);
+        cannon.add(barrelGroup);
         cannon.position.set(0, -20, 550);
         scene.add(cannon);
         barrelGroup.add(cannonCamera);
@@ -343,7 +363,7 @@
             const startVel = fireDirection.clone().multiplyScalar(state.cannonPower);
             let currentPos = startPos.clone();
             let currentVel = startVel.clone();
-            const mass = objectTypes[ui.ammoSelect.value].mass;
+            const mass = parseFloat(ui.massInput.value);
             for (let i = 0; i < steps; i++) {
                 let totalForce = new THREE.Vector3();
                 for (const bh of blackHoles) {
@@ -362,9 +382,9 @@
             trajectoryLine.geometry.setFromPoints(points);
         }
 
-        function fireCannon() {
-            if (!state.canFire) return;
+        function createProjectile(position, velocity) {
             const options = objectTypes[ui.ammoSelect.value];
+            const mass = parseFloat(ui.massInput.value);
             const projectileMaterial = new THREE.MeshStandardMaterial({
                 color: options.color, 
                 emissive: options.color,
@@ -376,40 +396,16 @@
             const projectile = new THREE.Mesh(new THREE.SphereGeometry(options.radius, 32, 32), projectileMaterial);
             projectile.layers.enable(BLOOM_SCENE);
 
-            const startPos = new THREE.Vector3(0, 0, -12.5);
-            barrelGroup.localToWorld(startPos);
-            
-            let fireDirection;
-
-            if (state.cameraMode === 'aiming') {
-                const aimDirection = new THREE.Vector3();
-                barrelGroup.getWorldDirection(aimDirection);
-                aimDirection.negate();
-                const jitter = new THREE.Vector3( (Math.random() - 0.5) * 0.1, (Math.random() - 0.5) * 0.1, (Math.random() - 0.5) * 0.1 );
-                fireDirection = new THREE.Vector3().addVectors(aimDirection, jitter).normalize();
-            } else { 
-                const targetBh = blackHoles[0];
-                const toBh = new THREE.Vector3().subVectors(targetBh.mesh.position, startPos).normalize();
-                const up = new THREE.Vector3(0, 1, 0);
-                let perp = new THREE.Vector3().crossVectors(toBh, up).normalize();
-                if (perp.lengthSq() < 0.01) { perp.set(1, 0, 0); }
-                perp.applyAxisAngle(toBh, Math.random() * Math.PI * 2);
-                perp.multiplyScalar(0.3 + Math.random() * 1.2);
-                fireDirection = toBh.clone().add(perp).normalize();
-            }
-
-            projectile.position.copy(startPos);
+            projectile.position.copy(position);
             scene.add(projectile);
-            const velocity = fireDirection.clone().multiplyScalar(state.cannonPower);
             const newId = `obj_${state.objectIdCounter++}`;
 
             if (options.isBlackHole) {
-                const newBh = { id: newId, name: 'Fired BH', mesh: projectile, mass: options.mass, radius: options.radius, velocity: velocity };
+                const newBh = { id: newId, name: 'Fired BH', mesh: projectile, mass: mass, radius: options.radius, velocity: velocity, rotationSpeed: 0.001 };
                 blackHoles.push(newBh);
-                const newDisk = new THREE.Points(createDiskGeometry(options.radius + 2, 20, 0xcccccc, 0xaaaaaa), new THREE.PointsMaterial({ size: 0.3, vertexColors: true, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.8, depthWrite: false }));
-                projectile.add(newDisk);
+                updateBlackHoleVisuals(newBh);
             } else {
-                const obj = { id: newId, name: options.name, mesh: projectile, velocity: velocity, mass: options.mass, originalColor: new THREE.Color(options.color), options: options };
+                const obj = { id: newId, name: options.name, mesh: projectile, velocity: velocity, mass: mass, originalColor: new THREE.Color(options.color), options: options };
                 celestialObjects.push(obj);
                 if (options.isStar) {
                     const starLight = new THREE.PointLight(options.color, 2, 800);
@@ -419,9 +415,6 @@
             }
             updateObjectCount();
             updateMassEditor();
-            state.canFire = false;
-            state.recoilOffset = 3; 
-            setTimeout(() => { state.canFire = true; }, 300);
         }
         
         function updatePhysics(delta) {
@@ -435,6 +428,7 @@
                     const distanceSq = distanceVec.lengthSq();
                     if (distanceSq < (bh1.radius + bh2.radius) * (bh1.radius + bh2.radius)) {
                         const bigger = bh1.mass > bh2.mass ? bh1 : bh2; const smaller = bh1.mass > bh2.mass ? bh2 : bh1;
+                        const wasCameraTarget = smaller.id === cameraTarget.id;
                         const combinedMomentum = new THREE.Vector3().addScaledVector(bigger.velocity, bigger.mass).addScaledVector(smaller.velocity, smaller.mass);
                         bigger.mass += smaller.mass; bigger.velocity = combinedMomentum.divideScalar(bigger.mass);
                         const scaleFactor = Math.cbrt(bigger.mass / (bigger.mass - smaller.mass));
@@ -443,6 +437,8 @@
                         const removedIndex = blackHoles.findIndex(bh => bh.id === smaller.id);
                         if (removedIndex > -1) blackHoles.splice(removedIndex, 1);
                         if (j < i) i--;
+                        updateBlackHoleVisuals(bigger);
+                        if (wasCameraTarget) updateCameraTarget();
                         updateMassEditor(); continue;
                     }
                     const forceMagnitude = (state.gravityConstant * bh1.mass * bh2.mass) / distanceSq;
@@ -452,7 +448,7 @@
                 bh1.velocity.add(acceleration.multiplyScalar(delta));
             }
             for (const bh of blackHoles) {
-                if (bh.id !== 'smbh') bh.mesh.position.add(bh.velocity.clone().multiplyScalar(delta));
+                bh.mesh.position.add(bh.velocity.clone().multiplyScalar(delta));
             }
 
             const redColor = new THREE.Color(0xff0000);
@@ -529,6 +525,7 @@
         const ui = {
             gravitySlider: document.getElementById('gravity-slider'), gravityInput: document.getElementById('gravity-input'),
             powerSlider: document.getElementById('power-slider'), powerInput: document.getElementById('power-input'),
+            massSlider: document.getElementById('mass-slider'), massInput: document.getElementById('mass-input'),
             ammoSelect: document.getElementById('ammo-select'), objectCountEl: document.getElementById('object-count-info'),
             controlsInfoEl: document.getElementById('controls-info'), crosshair: document.getElementById('crosshair'),
             mainControls: document.getElementById('main-controls-container'), mobileControls: document.getElementById('mobile-controls'),
@@ -593,14 +590,42 @@
             renderPass.camera = activeCamera;
         }
 
-        renderer.domElement.addEventListener('click', () => { if (!state.isMobile && state.cameraMode === 'cinematic') setCameraMode('aiming'); });
+        renderer.domElement.addEventListener('click', (e) => {
+            if (e.target.closest('.controls-panel') || state.cameraMode === 'aiming') return;
+            const rect = renderer.domElement.getBoundingClientRect();
+            const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+            const mouse = new THREE.Vector2(x, y);
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(mouse, activeCamera);
+            const point = new THREE.Vector3();
+            raycaster.ray.at(500, point);
+            const startPos = new THREE.Vector3();
+            activeCamera.getWorldPosition(startPos);
+            const velocity = new THREE.Vector3().subVectors(point, startPos).normalize().multiplyScalar(state.cannonPower);
+            createProjectile(startPos, velocity);
+        });
+
         document.addEventListener('pointerlockchange', () => { if (!state.isMobile && document.pointerLockElement !== renderer.domElement && state.cameraMode === 'aiming') setCameraMode('cinematic'); });
         document.addEventListener('keydown', (e) => { state.keyState[e.code] = true; });
         document.addEventListener('keyup', (e) => { state.keyState[e.code] = false; });
         document.addEventListener('mousemove', (e) => { if (state.cameraMode !== 'aiming' || state.isMobile) return; cannon.rotation.y -= e.movementX * 0.002; barrelGroup.rotation.x = Math.max(-Math.PI / 2 + 0.2, Math.min(Math.PI / 2 - 0.2, barrelGroup.rotation.x - e.movementY * 0.002)); });
-        renderer.domElement.addEventListener('mousedown', (e) => { if (state.cameraMode === 'aiming' && !state.isMobile && e.button === 0) fireCannon(); });
+        document.addEventListener('mousedown', (e) => { if (state.cameraMode === 'aiming' && !state.isMobile && e.button === 0) createProjectile(cannonCamera.position, cannonCamera.getWorldDirection(new THREE.Vector3()).multiplyScalar(state.cannonPower)); });
         document.addEventListener('wheel', (e) => { if (state.cameraMode !== 'aiming' || state.isMobile) return; let currentIndex = ui.ammoSelect.selectedIndex; currentIndex += Math.sign(e.deltaY); if (currentIndex < 0) currentIndex = ui.ammoSelect.options.length - 1; else if (currentIndex >= ui.ammoSelect.options.length) currentIndex = 0; ui.ammoSelect.selectedIndex = currentIndex; });
-        ui.mainFireBtn.addEventListener('click', fireCannon);
+        ui.mainFireBtn.addEventListener('click', () => {
+            const startPos = new THREE.Vector3(0, 0, -12.5);
+            barrelGroup.localToWorld(startPos);
+            const targetBh = blackHoles[0];
+            const toBh = new THREE.Vector3().subVectors(targetBh.mesh.position, startPos).normalize();
+            const up = new THREE.Vector3(0, 1, 0);
+            let perp = new THREE.Vector3().crossVectors(toBh, up).normalize();
+            if (perp.lengthSq() < 0.01) { perp.set(1, 0, 0); }
+            perp.applyAxisAngle(toBh, Math.random() * Math.PI * 2);
+            perp.multiplyScalar(0.3 + Math.random() * 1.2);
+            const fireDirection = toBh.clone().add(perp).normalize();
+            const velocity = fireDirection.clone().multiplyScalar(state.cannonPower);
+            createProjectile(startPos, velocity);
+        });
         ui.toggleAimBtn.addEventListener('click', (e) => { e.stopPropagation(); setCameraMode(state.cameraMode === 'cinematic' ? 'aiming' : 'cinematic'); });
 
         function setupJoystick(elementId, onMove) {
@@ -619,13 +644,15 @@
         if (state.isMobile) {
             setupJoystick('joystick-move', (x, y) => { moveInput = { x, y }; });
             setupJoystick('joystick-aim', (x, y) => { aimInput = { x, y }; });
-            document.getElementById('mobile-fire-button').addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); fireCannon(); }, { passive: false });
+            document.getElementById('mobile-fire-button').addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); createProjectile(cannonCamera.position, cannonCamera.getWorldDirection(new THREE.Vector3()).multiplyScalar(state.cannonPower)); }, { passive: false });
         }
 
         ui.gravitySlider.addEventListener('input', (e) => { ui.gravityInput.value = e.target.value; updateGravity(parseFloat(e.target.value)); });
         ui.gravityInput.addEventListener('change', (e) => { ui.gravitySlider.value = e.target.value; updateGravity(parseFloat(e.target.value)); });
         ui.powerSlider.addEventListener('input', (e) => { ui.powerInput.value = e.target.value; state.cannonPower = parseFloat(e.target.value); });
         ui.powerInput.addEventListener('change', (e) => { ui.powerSlider.value = e.target.value; state.cannonPower = parseFloat(e.target.value); });
+        ui.massSlider.addEventListener('input', (e) => { ui.massInput.value = e.target.value; });
+        ui.massInput.addEventListener('change', (e) => { ui.massSlider.value = e.target.value; });
         
         document.getElementById('clear-btn').addEventListener('click', () => {
             location.reload();
@@ -645,6 +672,27 @@
         function updateAmmoUI() {
             const selectedOption = ui.ammoSelect.options[ui.ammoSelect.selectedIndex];
             ui.currentAmmoName.textContent = selectedOption.text;
+            updateMassControls();
+        }
+
+        function updateMassControls() {
+            const selectedType = objectTypes[ui.ammoSelect.value];
+            ui.massSlider.min = selectedType.minMass;
+            ui.massSlider.max = selectedType.maxMass;
+            ui.massSlider.value = selectedType.mass;
+            ui.massInput.min = selectedType.minMass;
+            ui.massInput.max = selectedType.maxMass;
+            ui.massInput.value = selectedType.mass;
+        }
+        
+        function updateCameraTarget() {
+            if (blackHoles.length > 0) {
+                blackHoles.sort((a, b) => b.mass - a.mass);
+                cameraTarget = blackHoles[0];
+                targetOrbitRadius = 600 + cameraTarget.radius * 10;
+            } else {
+                cameraTarget = { mesh: new THREE.Object3D() }; 
+            }
         }
 
         ui.ammoSelect.addEventListener('change', updateAmmoUI);
@@ -694,15 +742,25 @@
             const elapsedTime = clock.getElapsedTime();
             if (state.cameraMode === 'cinematic') {
                 const time = elapsedTime * 0.08;
-                cinematicCamera.position.x = Math.sin(time * 0.7) * 600;
-                cinematicCamera.position.y = Math.cos(time * 0.5) * 350;
-                cinematicCamera.position.z = Math.cos(time * 0.9) * 600;
-                cinematicCamera.lookAt(smbh.position);
+                currentOrbitRadius = THREE.MathUtils.lerp(currentOrbitRadius, targetOrbitRadius, 0.05);
+                const offsetX = Math.sin(time * 0.7) * currentOrbitRadius;
+                const offsetY = Math.cos(time * 0.5) * (currentOrbitRadius * 0.6);
+                const offsetZ = Math.cos(time * 0.9) * currentOrbitRadius;
+                cinematicCamera.position.copy(cameraTarget.mesh.position).add(new THREE.Vector3(offsetX, offsetY, offsetZ));
+                cinematicCamera.lookAt(cameraTarget.mesh.position);
             }
             updateCannon(delta);
-            if (state.recoilOffset > 0) { cannonBarrel.position.z = state.recoilOffset; state.recoilOffset -= 15 * delta; } else { cannonBarrel.position.z = 0; }
-            smbhAccretionDisk.rotation.y += 0.0005;
-            orbitingBhAccretionDisk.rotation.y += 0.001;
+            
+            blackHoles.forEach(bh => {
+                if (bh.mesh.children.length > 0 && bh.mesh.children[0].isPoints) {
+                    bh.mesh.children[0].rotation.y += bh.rotationSpeed;
+                }
+                if(bh.mesh.material.uniforms) {
+                    bh.mesh.material.uniforms.time.value = elapsedTime;
+                    bh.mesh.material.uniforms.cameraPos.value.copy(activeCamera.position);
+                }
+            });
+
             updatePhysics(delta);
             if(trajectoryLine) {
                 if(state.cameraMode === 'aiming') updateTrajectory();
@@ -736,6 +794,28 @@
             }
         }
 
+        function updateBlackHoleVisuals(bh) {
+            if (bh.mesh.children.length > 0) {
+                bh.mesh.remove(bh.mesh.children[0]);
+            }
+
+            const massRatio = Math.min(1, (bh.mass - 100000) / 1000000); 
+
+            const color1 = new THREE.Color(0xffa500).lerp(new THREE.Color(0x00aaff), massRatio);
+            const color2 = new THREE.Color(0x8B0000).lerp(new THREE.Color(0x9400D3), massRatio);
+            
+            const highMassColor1 = new THREE.Color(0x00aaff).lerp(new THREE.Color(0xFFFFFF), massRatio * 2 - 1);
+            const highMassColor2 = new THREE.Color(0x9400D3).lerp(new THREE.Color(0x00FFFF), massRatio * 2 - 1);
+
+            color1.lerp(highMassColor1, massRatio > 0.5 ? 1 : 0);
+            color2.lerp(highMassColor2, massRatio > 0.5 ? 1 : 0);
+
+            const diskGeometry = createDiskGeometry(bh.radius + 5, bh.radius + 60, color1, color2);
+            const disk = new THREE.Points(diskGeometry, new THREE.PointsMaterial({ size: 0.5, vertexColors: true, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.8, depthWrite: false }));
+            bh.mesh.add(disk);
+            bh.rotationSpeed = 0.0005 + massRatio * 0.005;
+        }
+
         setCameraMode('cinematic');
         updateObjectCount();
         updateMassEditor();
@@ -755,6 +835,43 @@
         varying vec2 vUv;
         void main() {
             gl_FragColor = ( texture2D( baseTexture, vUv ) + vec4( 1.0 ) * texture2D( bloomTexture, vUv ) );
+        }
+    </script>
+    <script id="bh-vertexshader" type="x-shader/x-vertex">
+        uniform float time;
+        uniform float radius;
+        uniform vec3 cameraPos;
+        varying vec3 vNormal;
+        varying vec3 vViewDir;
+
+        void main() {
+            vNormal = normal;
+            vec3 worldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+            vViewDir = normalize(cameraPos - worldPos);
+
+            float dist = length(position.xz);
+            float angle = atan(position.z, position.x);
+            float vortex = pow(dist / radius, 2.0) * -10.0;
+            vortex *= sin(dist / radius * 3.14159 * 2.0 + time * 2.0);
+
+            vec3 spherePos = normalize(position) * radius;
+            
+            float viewFactor = 1.0 - abs(dot(normalize(cameraPos - worldPos), (modelMatrix * vec4(normal, 0.0)).xyz));
+            
+            vec3 finalPos = mix(spherePos, vec3(position.x, vortex, position.z), viewFactor);
+
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(finalPos, 1.0);
+        }
+    </script>
+    <script id="bh-fragmentshader" type="x-shader/x-fragment">
+        uniform sampler2D baseTexture;
+        varying vec3 vViewDir;
+        varying vec3 vNormal;
+
+        void main() {
+            vec3 reflected = reflect(vViewDir, vNormal);
+            vec2 uv = vec2(atan(reflected.z, reflected.x), acos(reflected.y) / 3.14159);
+            gl_FragColor = texture2D(baseTexture, uv);
         }
     </script>
 </body>
